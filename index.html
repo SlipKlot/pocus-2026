@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POCUS MOSCOW 2026</title>
+    <!-- React & Tailwind -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Firebase SDK (Compat version for single-file simplicity) -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .loading-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // ==========================================================
+        // ВАШИ КЛЮЧИ FIREBASE УСПЕШНО УСТАНОВЛЕНЫ
+        // ==========================================================
+        const manualFirebaseConfig = {
+            apiKey: "AIzaSyCpSBMnDVCerhrovdcuk29isA6bj2xd9JI",
+            authDomain: "pocus-moscow.firebaseapp.com",
+            projectId: "pocus-moscow",
+            storageBucket: "pocus-moscow.firebasestorage.app",
+            messagingSenderId: "161163101632",
+            appId: "1:161163101632:web:19ba91c0ff724dcb837425",
+            measurementId: "G-DSK1JBE7Y7"
+        };
+
+        const getFirebaseConfig = () => {
+            try {
+                if (typeof __firebase_config !== 'undefined') {
+                    return JSON.parse(__firebase_config);
+                }
+            } catch (e) {}
+            return manualFirebaseConfig;
+        };
+
+        const currentConfig = getFirebaseConfig();
+
+        const isConfigValid = (config) => {
+            return config && config.apiKey && !config.apiKey.startsWith("ВАШ_");
+        };
+
+        let db = null;
+        let auth = null;
+        if (isConfigValid(currentConfig)) {
+            if (!firebase.apps.length) {
+                firebase.initializeApp(currentConfig);
+            }
+            db = firebase.firestore();
+            auth = firebase.auth();
+        }
+
+        const App = () => {
+            const [events, setEvents] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [showModal, setShowModal] = useState(false);
+            const [newCourse, setNewCourse] = useState({ date: '', title: '' });
+
+            useEffect(() => {
+                if (!isConfigValid(currentConfig)) {
+                    setLoading(false);
+                    return;
+                }
+
+                const connect = async () => {
+                    try {
+                        await auth.signInAnonymously();
+                        
+                        const unsubscribe = db.collection("events").orderBy("order", "asc")
+                            .onSnapshot((snapshot) => {
+                                const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                                setEvents(items);
+                                setLoading(false);
+                            }, (err) => {
+                                console.error("Firestore error:", err);
+                                setError("Ошибка доступа. Проверьте вкладку 'Rules' в Firebase Console.");
+                                setLoading(false);
+                            });
+                        return unsubscribe;
+                    } catch (err) {
+                        console.error("Auth error:", err);
+                        setError("Не удалось подключиться к Firebase. Проверьте ключи.");
+                        setLoading(false);
+                    }
+                };
+
+                const unsubPromise = connect();
+                return () => unsubPromise.then(unsub => unsub && unsub());
+            }, []);
+
+            const handleAddTeacher = async (eventId, teacherName) => {
+                if (!teacherName.trim()) return;
+                try {
+                    const event = events.find(e => e.id === eventId);
+                    const updatedTeachers = [...(event.teachers || []), teacherName.trim()];
+                    await db.collection("events").doc(eventId).update({ teachers: updatedTeachers });
+                } catch (e) {
+                    alert("Ошибка записи в базу. Проверьте настройки прав доступа в Firestore.");
+                }
+            };
+
+            const removeTeacher = async (eventId, name) => {
+                try {
+                    const event = events.find(e => e.id === eventId);
+                    const updatedTeachers = event.teachers.filter(t => t !== name);
+                    await db.collection("events").doc(eventId).update({ teachers: updatedTeachers });
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            const deleteCourse = async (id) => {
+                if(confirm("Удалить это мероприятие полностью?")) {
+                    try {
+                        await db.collection("events").doc(id).delete();
+                    } catch (e) {
+                        alert("Ошибка удаления");
+                    }
+                }
+            };
+
+            const teacherStats = useMemo(() => {
+                const stats = {};
+                events.forEach(ev => (ev.teachers || []).forEach(t => {
+                    stats[t] = (stats[t] || 0) + 1;
+                }));
+                return Object.entries(stats).sort((a, b) => b[1] - a[1]);
+            }, [events]);
+
+            if (!isConfigValid(currentConfig)) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100">
+                        <div className="max-w-md w-full bg-white p-8 rounded-[32px] shadow-2xl border-4 border-amber-400">
+                            <h2 className="text-2xl font-black text-slate-800 mb-4 text-center">⚙️ Конфигурация</h2>
+                            <p className="text-slate-600 mb-6 text-center italic">
+                                Вставьте ваши ключи в файл index.html (строки 27-34).
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (loading) return (
+                <div className="h-screen flex items-center justify-center">
+                    <div className="text-center">
+                        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full loading-spin mx-auto mb-4"></div>
+                        <p className="font-bold text-slate-400 uppercase tracking-widest text-[10px]">Подключение к облаку POCUS...</p>
+                    </div>
+                </div>
+            );
+
+            if (error) return (
+                <div className="h-screen flex items-center justify-center p-6 text-center">
+                    <div className="bg-red-50 text-red-600 p-10 rounded-[40px] border border-red-100 max-w-sm shadow-xl">
+                        <p className="text-5xl mb-6">🔌</p>
+                        <p className="font-black uppercase text-xs mb-3 tracking-widest">Ошибка соединения</p>
+                        <p className="font-bold text-sm leading-relaxed mb-6">{error}</p>
+                        <button onClick={() => window.location.reload()} className="w-full bg-red-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest">Попробовать снова</button>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="max-w-6xl mx-auto p-4 md:p-10 pb-20">
+                    <header className="flex flex-col md:flex-row justify-between items-center mb-12 gap-6">
+                        <div>
+                            <h1 className="text-4xl font-black text-slate-800 tracking-tighter italic uppercase">POCUS <span className="text-blue-600">MOSCOW</span></h1>
+                            <div className="flex items-center gap-2 mt-2">
+                                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                                <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest leading-none">Cloud Sync 2026</p>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={() => setShowModal(true)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-10 py-4 rounded-3xl font-black shadow-2xl shadow-blue-200 transition-all active:scale-95 text-sm"
+                        >
+                            + ДОБАВИТЬ МЕРОПРИЯТИЕ
+                        </button>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+                        <div className="lg:col-span-2 space-y-6">
+                            <div className="bg-white p-6 rounded-[32px] shadow-sm border border-slate-100 flex items-center gap-4 transition-focus-within focus-within:ring-4 focus-within:ring-blue-100">
+                                <span className="text-2xl opacity-20 select-none">🔍</span>
+                                <input 
+                                    type="text" 
+                                    placeholder="Поиск по курсу или фамилии..." 
+                                    className="w-full bg-transparent outline-none text-lg font-bold text-slate-700 placeholder:text-slate-300"
+                                    value={searchTerm}
+                                    onChange={e => setSearchTerm(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="bg-white rounded-[40px] shadow-2xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left">
+                                        <thead>
+                                            <tr className="bg-slate-50/50 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 border-b">
+                                                <th className="px-8 py-6">Дата</th>
+                                                <th className="px-8 py-6">Мероприятие</th>
+                                                <th className="px-8 py-6">Преподаватели</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50">
+                                            {events.filter(e => e.title.toLowerCase().includes(searchTerm.toLowerCase()) || (e.teachers && e.teachers.some(t => t.toLowerCase().includes(searchTerm.toLowerCase())))).map(ev => (
+                                                <tr key={ev.id} className="group hover:bg-blue-50/30 transition-all">
+                                                    <td className="px-8 py-6 font-black text-blue-600 text-sm whitespace-nowrap">{ev.date}</td>
+                                                    <td className="px-8 py-6 font-bold text-slate-700 text-sm leading-tight relative">
+                                                        {ev.title}
+                                                        <button 
+                                                            onClick={() => deleteCourse(ev.id)} 
+                                                            className="absolute -left-2 top-1/2 -translate-y-1/2 text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2"
+                                                        >
+                                                            🗑️
+                                                        </button>
+                                                    </td>
+                                                    <td className="px-8 py-6">
+                                                        <div className="flex flex-wrap gap-2 items-center">
+                                                            {(ev.teachers || []).map((t, i) => (
+                                                                <span key={i} className="bg-white border border-slate-200 px-3 py-1.5 rounded-2xl text-xs font-bold shadow-sm flex items-center gap-2 group/tag">
+                                                                    {t}
+                                                                    <button onClick={() => removeTeacher(ev.id, t)} className="text-slate-300 hover:text-red-500 transition-colors">×</button>
+                                                                </span>
+                                                            ))}
+                                                            <button 
+                                                                onClick={() => {
+                                                                    const name = prompt("Фамилия преподавателя:");
+                                                                    if(name) handleAddTeacher(ev.id, name);
+                                                                }}
+                                                                className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                                                            >
+                                                                +
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white p-8 rounded-[40px] shadow-2xl shadow-slate-200/50 border border-slate-100 h-fit sticky top-10">
+                            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-8 flex items-center gap-2">
+                                📊 Нагрузка 2026
+                            </h3>
+                            <div className="space-y-6">
+                                {teacherStats.map(([name, count]) => (
+                                    <div key={name}>
+                                        <div className="flex justify-between text-sm mb-2 font-black text-slate-700">
+                                            <span>{name}</span>
+                                            <span className="text-blue-600 font-black">{count}</span>
+                                        </div>
+                                        <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden">
+                                            <div 
+                                                className="bg-blue-600 h-full transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(37,99,235,0.3)]" 
+                                                style={{width: `${(count/Math.max(events.length, 1))*100}%`}}
+                                            ></div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {teacherStats.length === 0 && (
+                                    <div className="text-center py-10 opacity-30 select-none">
+                                        <p className="text-4xl mb-4">😶‍🌫️</p>
+                                        <p className="text-xs font-bold uppercase tracking-widest">Список пуст</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {showModal && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-6 z-50">
+                            <div className="bg-white p-10 rounded-[45px] max-w-sm w-full shadow-[0_35px_60px_-15px_rgba(0,0,0,0.3)] animate-in zoom-in duration-200">
+                                <h2 className="text-3xl font-black mb-8 text-slate-800 tracking-tighter">Новый курс</h2>
+                                <div className="space-y-4">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-4 tracking-widest">Когда?</label>
+                                        <input placeholder="Напр: 12-13 мая" className="w-full p-5 bg-slate-50 rounded-[25px] outline-none border-2 border-transparent focus:border-blue-500 font-bold transition-all" onChange={e => setNewCourse({...newCourse, date: e.target.value})}/>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-4 tracking-widest">Что?</label>
+                                        <input placeholder="Название мероприятия" className="w-full p-5 bg-slate-50 rounded-[25px] outline-none border-2 border-transparent focus:border-blue-500 font-bold transition-all" onChange={e => setNewCourse({...newCourse, title: e.target.value})}/>
+                                    </div>
+                                    <div className="pt-4">
+                                        <button 
+                                            onClick={async () => {
+                                                if(!newCourse.date || !newCourse.title) return;
+                                                await db.collection("events").add({ ...newCourse, teachers: [], order: Date.now() });
+                                                setShowModal(false);
+                                            }}
+                                            className="w-full bg-blue-600 text-white p-5 rounded-[25px] font-black shadow-xl shadow-blue-200 active:scale-95 transition-all text-sm uppercase tracking-widest"
+                                        >
+                                            СОХРАНИТЬ
+                                        </button>
+                                        <button onClick={() => setShowModal(false)} className="w-full text-slate-300 font-black uppercase tracking-widest text-[10px] mt-6 hover:text-slate-500 transition-colors">Отмена</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
